@@ -27,8 +27,12 @@ import matplotlib.pyplot as plt
 plt.switch_backend('agg')
 
 
+# コマンドライン引数を解析するためのArgumentParserオブジェクトを作成
 parser = argparse.ArgumentParser(description='PyTorch 3D Reconstruction Training')
-parser.add_argument('--exp', type=int, default=1, 
+# 各種のコマンドライン引数を追加
+# これにより、ユーザーはコマンドラインからスクリプトの動作をカスタマイズできます
+# 例: 実験のインデックス、乱数のシード、入力のビュー数など
+parser.add_argument('--exp', type=int, default=1,
                     help='experiments index')
 parser.add_argument('--seed', type=int, default=1, 
                     metavar='N', help='manual seed for GPUs to generate random numbers')
@@ -47,37 +51,54 @@ parser.add_argument('--test', type=int, default=1,
 parser.add_argument('--vis_plane', type=int, default=0,
                     help='visualization plane of 3D images: [0,1,2]')
 
+# メイン関数の定義
+# この関数は、スクリプトが実行されたときに最初に呼び出される関数です
 def main():
     global args
     global exp_path
+    # コマンドライン引数を解析して、'args'オブジェクトに格納
     args = parser.parse_args()
     # exp_path = './exp{}'.format(args.exp)
+    # 実験データを保存するためのパスを設定
     exp_path = './exp'
 
     # set random seed for GPUs for reproducible
+    # 再現性を確保するための乱数のシードを設定
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.backends.cudnn.deterministic = True
 
+    # 現在の実験のインデックスを表示
     print('Testing Experiement {} ...................'.format(args.exp))
+    # 実験のインデックスに基づいて、出力チャンネルの数を設定
     if args.exp == 1:
         args.output_channel = 46
     else:
         assert False, print('Not legal experiment index!')
 
     # define model
+    # モデルの定義
+    # ReconNetは、入力として2D投影を受け取り、3Dモデルを出力するネットワークです
     model = ReconNet(in_channels=args.num_views, out_channels=args.output_channel)
+    # モデルをGPU上で実行するための設定
     model = torch.nn.DataParallel(model).cuda()
 
     # define loss function
+    # 損失関数の定義
+    # この場合、平均二乗誤差(MSE)を使用しています
     criterion = nn.MSELoss(size_average=True, reduce=True).cuda()
 
+
     # enable CUDNN benchmark
+    # CUDNNのベンチマークモードを有効にする
+    # これにより、CUDNNは最適なアルゴリズムを動的に選択して、計算を高速化します
     cudnn.benchmark = True
 
     # customized dataset
+    # カスタムデータセットの定義
+    # このデータセットは、2D投影画像と3Dモデルのペアを返します
     class MedReconDataset(Dataset):
         """ 3D Reconstruction Dataset."""
         def __init__(self, csv_file=None, data_dir=None, transform=None):
@@ -87,8 +108,10 @@ def main():
             return 1
 
         def __getitem__(self, idx):
+            # 2D投影画像を格納するための配列を初期化
             images = np.zeros((args.input_size, args.input_size, args.num_views), dtype=np.uint8)      ### input image size (H, W, C)
             ### load image
+            # 各投影画像を読み込み、配列に格納
             for view_idx in range(args.num_views):
                 image_path = os.path.join(exp_path, 'data/2D_projection_{}.jpg'.format(view_idx+1))
                 ### resize 2D images
@@ -98,23 +121,29 @@ def main():
                 images = self.transform(images)
 
             ### load target
+            # 3Dモデルを読み込み
             volume_path = os.path.join(exp_path, 'data/3D_CT.bin')
             volume = np.fromfile(volume_path, dtype=np.float32)
             volume = np.reshape(volume, (-1, args.output_size, args.output_size))
 
             ### scaling normalize
+            # 3Dモデルの値を[0,1]の範囲に正規化
             volume = volume - np.min(volume)
             volume = volume / np.max(volume)
             volume = torch.from_numpy(volume)
 
             return (images, volume)
 
+    # データの前処理を定義
+    # ここでは、画像をテンソルに変換し、平均と標準偏差で正規化しています
     normalize = transforms.Normalize(mean=[0.516], std=[0.264])
     test_dataset = MedReconDataset(
         transform = transforms.Compose([
                         transforms.ToTensor(),
                         normalize,
                         ]))
+    # データローダーを作成
+    # これにより、データセットからバッチ単位でデータを効率的に読み込むことができます
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=1, 
@@ -123,6 +152,7 @@ def main():
         pin_memory=True)
 
     # load model 
+    # 事前にトレーニングされたモデルの重みを読み込む
     ckpt_file = os.path.join(exp_path, 'model/model.pth.tar')
     if os.path.isfile(ckpt_file):
         print("=> loading checkpoint '{}' ".format(ckpt_file))
@@ -134,9 +164,10 @@ def main():
         print("=> no checkpoint found at '{}'".format(ckpt_file))
 
     # test evaluation 
+    # テストデータでのモデルの評価を実行
     loss, pred_data = test(test_loader, model, criterion, mode='Test')
 
-    # show image
+     # 予測された3Dモデルと実際の3Dモデルを比較し、結果を保存
     for idx in range(args.test):
         save_path = os.path.join(exp_path, 'result/sample_{}'.format(idx+1))
         if not os.path.exists(save_path):
@@ -150,6 +181,10 @@ def main():
         imageSave(pred, groundtruth, args.vis_plane, save_path)
 
     return 
+
+
+# 以下の関数は、テストデータでのモデルの評価、3Dモデルの正規化、予測と実際の3Dモデルの取得、
+# 予測と実際の3Dモデルの誤差メトリクスの計算、結果の保存など、さまざまな補助的なタスクを実行するためのもの。
 
 
 def test(val_loader, model, criterion, mode):
