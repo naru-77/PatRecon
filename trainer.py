@@ -11,165 +11,178 @@ class Trainer_ReconNet(nn.Module):
     def __init__(self, args):
         super(Trainer_ReconNet, self).__init__()
 
-        self.exp_name = args.exp
-        self.arch = args.arch
-        self.print_freq = args.print_freq
-        self.output_path = args.output_path
-        self.resume = args.resume
-        self.best_loss = 1e5
+        # 引数からパラメータを設定
+        self.exp_name = args.exp  # 実験の名前
+        self.arch = args.arch  # モデルのアーキテクチャ
+        self.print_freq = args.print_freq  # トレーニング情報をどの頻度で表示するか
+        self.output_path = args.output_path  # モデルの重みを保存するパス
+        self.resume = args.resume  # チェックポイントからトレーニングを再開するかどうか
+        self.best_loss = 1e5  # 最良の損失を非常に高い値として初期化
 
-        # create model
-        print("=> Creating model...")
-        if self.arch == 'ReconNet':
+
+        # モデルのインスタンスを作成
+        print("=> モデルを作成中...")
+        if self.arch == 'ReconNet':  
+            # ReconNetモデルを初期化
             self.model = ReconNet(in_channels=args.num_views, out_channels=args.output_channel, gain=args.init_gain, init_type=args.init_type)
             self.model = nn.DataParallel(self.model).cuda()
         else:
-            assert False, print('Not implemented model: {}'.format(self.arch))
+            # モデルのアーキテクチャが認識されない場合
+            assert False, print('実装されていないモデル: {}'.format(self.arch))
 
-        # define loss function
+        # 引数に基づいて損失関数を定義
         if args.loss == 'l1':
-            # L1 loss
+            # L1損失（絶対差）
             self.criterion = nn.L1Loss(size_average=True, reduce=True).cuda() 
         elif args.loss == 'l2':
-            # L2 loss (mean-square-error)
+            # L2損失（平均二乗誤差）
             self.criterion = nn.MSELoss(size_average=True, reduce=True).cuda()
         else:
-            assert False, print('Not implemented loss: {}'.format(args.loss))
+            # 損失タイプが認識されない場合
+            assert False, print('実装されていない損失: {}'.format(args.loss))
 
-        # define optimizer
+        # 引数に基づいてオプティマイザを定義
         if args.optim == 'adam':
+            # Adamオプティマイザを使用
             self.optimizer = torch.optim.Adam(self.model.parameters(), 
                                             lr=args.lr,
                                             betas=(0.5, 0.999),
-                                            weight_decay=args.weight_decay,  
-                                            )
+                                            weight_decay=args.weight_decay)
         else:
-            assert False, print('Not implemented optimizer: {}'.format(args.optim))
+            # オプティマイザのタイプが認識されない場合
+            assert False, print('実装されていないオプティマイザ: {}'.format(args.optim))
 
 
 
     def train_epoch(self, train_loader, epoch):
-
+        
+        #モデルを1エポック訓練します。
+        
         train_loss = AverageMeter()
 
-        # train mode
+       # モデルを訓練モードに変更
         self.model.train()
 
+        # トレーニングバッチをイテレーション
         for i, (input, target) in enumerate(train_loader):
+            # 入力とターゲットをGPUと互換性のある変数に変換
+            input_var, target_var = Variable(input).cuda(), Variable(target).cuda()
 
-            input_var, target_var = Variable(input), Variable(target)
-            input_var = input_var.cuda()
-            target_var = target_var.cuda()
-
-            # compute output
+            # モデルの出力を計算
             output = self.model(input_var)
 
-            # compute loss
+            # 損失を計算
             loss = self.criterion(output, target_var)
             train_loss.update(loss.data.item(), input.size(0))
 
-            # compute gradient and do SGD step
+            # 逆伝播とオプティマイザのステップを実行
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
-            # display info
+            # 定期的にトレーニング情報を表示
             if i % self.print_freq == 0:
-                print('Epoch: [{0}] \t'
-                      'Iter: [{1}/{2}]\t'
-                      'Train Loss: {loss.val:.5f} ({loss.avg:.5f})\t'.format(
+                print('エポック: [{0}] \t'
+                      'イテレーション: [{1}/{2}]\t'
+                      'トレーニング損失: {loss.val:.5f} ({loss.avg:.5f})\t'.format(
                        epoch, i, len(train_loader), 
                        loss=train_loss))
 
-        # finish current epoch
-        print('Finish Epoch: [{0}]\t'
-              'Average Train Loss: {loss.avg:.5f}\t'.format(
+         # 現在のエポックを完了
+        print('エポック完了: [{0}]\t'
+              '平均トレーニング損失: {loss.avg:.5f}\t'.format(
                epoch, loss=train_loss))
 
         return train_loss.avg
 
 
-    def validate(self, val_loader):
+       def validate(self, val_loader):
+        """
+        モデルを検証モードで実行し、検証セットの平均損失を計算します。
+        """
+        val_loss = AverageMeter()  # 損失の記録のためのユーティリティ
+        batch_time = AverageMeter()  # バッチ処理時間の記録のためのユーティリティ
 
-        val_loss = AverageMeter()
-        batch_time = AverageMeter()
-
-        # evaluation mode
+        # モデルを評価モードに変更
         self.model.eval()
 
         end = time.time()
         for i, (input, target) in enumerate(val_loader):
+            # 入力とターゲットをGPUと互換性のある変数に変換
+            input_var, target_var = Variable(input).cuda(), Variable(target).cuda()
 
-            input_var, target_var = Variable(input), Variable(target)
-            input_var = input_var.cuda()
-            target_var = target_var.cuda()
-
-            # compute output
+            # モデルの出力を計算
             output = self.model(input_var)
 
-            # compute loss
+            # 損失を計算
             loss = self.criterion(output, target_var)
             val_loss.update(loss.data.item(), input.size(0))
 
-            # measure elapsed time
-            batch_time.update(time.time()-end)
+            # 経過時間を計測
+            batch_time.update(time.time() - end)
             end = time.time()
 
-            # if i % args.print_freq == 0:
-            print('Val: [{0}/{1}]\t'
-                  'Time {batch_time.val: .3f} ({batch_time.avg:.3f})\t'
-                  'Loss {loss.val:.5f} ({loss.avg:.5f})\t'.format(
+            # 定期的に検証情報を表示
+            print('検証: [{0}/{1}]\t'
+                  '時間 {batch_time.val: .3f} ({batch_time.avg:.3f})\t'
+                  '損失 {loss.val:.5f} ({loss.avg:.5f})\t'.format(
                    i, len(val_loader), 
                    batch_time=batch_time, 
                    loss=val_loss))
 
         return val_loss.avg
 
-
     def save(self, curr_val_loss, epoch):
-        # update best loss and save checkpoint
+        """
+        現在のモデルとその最良の状態を保存します。
+        """
+        # 現在の検証損失が最良のものか確認し、必要に応じて更新
         is_best = curr_val_loss < self.best_loss
         self.best_loss = min(curr_val_loss, self.best_loss)
 
-        state = {'epoch': epoch + 1,
-                'arch': self.arch,
-                'state_dict': self.model.state_dict(),
-                'best_loss': self.best_loss,
-                'optimizer': self.optimizer.state_dict(),
-                }
+        # チェックポイントの状態を定義
+        state = {
+            'epoch': epoch + 1,
+            'arch': self.arch,
+            'state_dict': self.model.state_dict(),
+            'best_loss': self.best_loss,
+            'optimizer': self.optimizer.state_dict(),
+        }
 
+        # チェックポイントのファイル名を定義
         filename = osp.join(self.output_path, 'curr_model.pth.tar')
         best_filename = osp.join(self.output_path, 'best_model.pth.tar')
 
-        print('! Saving checkpoint: {}'.format(filename))
+        print('! チェックポイントを保存中: {}'.format(filename))
         torch.save(state, filename)
 
         if is_best:
-            print('!! Saving best checkpoint: {}'.format(best_filename))
+            print('!! 最良のチェックポイントを保存中: {}'.format(best_filename))
             shutil.copyfile(filename, best_filename)
 
-
     def load(self):
-
+        """
+        保存されたモデルのチェックポイントを読み込みます。
+        """
         if self.resume == 'best':
             ckpt_file = osp.join(self.output_path, 'best_model.pth.tar')
         elif self.resume == 'final':
             ckpt_file = osp.join(self.output_path, 'curr_model.pth.tar')
         else:
-            assert False, print("=> no available checkpoint '{}'".format(ckpt_file))
+            assert False, print("利用可能なチェックポイントが見つかりません '{}'".format(ckpt_file))
 
         if osp.isfile(ckpt_file):
-            print("=> loading checkpoint '{}'".format(ckpt_file))
+            print("=> チェックポイントを読み込み中 '{}'".format(ckpt_file))
             checkpoint = torch.load(ckpt_file)
             start_epoch = checkpoint['epoch']
 
+            # モデルとオプティマイザの状態を読み込み
             self.best_loss = checkpoint['best_loss']
             self.model.load_state_dict(checkpoint['state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(ckpt_file, checkpoint['epoch']))
+            print("=> チェックポイントを読み込みました '{}' (エポック {})".format(ckpt_file, checkpoint['epoch']))
         else:
-            print("=> no checkpoint found at '{}'".format(ckpt_file))
+            print("=> チェックポイントが見つかりませんでした '{}'".format(ckpt_file))
 
         return start_epoch
 
