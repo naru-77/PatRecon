@@ -250,7 +250,8 @@ class ReconNet(nn.Module):
         self.deconv_layer2 = _make_layers(128, 64, "deconv4x4_s2", "3d", "relu")
         self.deconv_layer1 = _make_layers(64, 64, "deconv3x3_s1", "3d", "relu")
         self.deconv_layer0 = _make_layers(64, 1, "conv1x1_s1", False, "relu")
-        self.output_layer = _make_layers(64, out_channels, "conv1_s1", False)
+        self.output_layer = _make_layers(64, 128, "conv1_s1", False)
+        # self.output_layer = _make_layers(64, out_channels, "conv1_s1", False)
 
         # network initialization # ネットワークの重みを初期化
         _initialize_weights(self)

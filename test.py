@@ -92,7 +92,8 @@ class MedReconDataset(Dataset):
         # 各投影画像を読み込み、配列に格納
         for view_idx in range(args.num_views):
             image_path = os.path.join(
-                exp_path, "data/2D_projection_{}.jpg".format(view_idx + 1)
+                exp_path,
+                "DRRoutput/output_volume_D/projection_{}.png".format(view_idx),
             )
             ### resize 2D images
             img = Image.open(image_path).resize((args.input_size, args.input_size))
@@ -102,10 +103,12 @@ class MedReconDataset(Dataset):
 
         ### load target
         # 3Dモデルを読み込み
-        volume_path = os.path.join(exp_path, "data/3D_CT.bin")
+        volume_path = os.path.join(exp_path, "output_volume_D.bin")
         volume = np.fromfile(volume_path, dtype=np.float32)
         volume = np.reshape(volume, (-1, args.output_size, args.output_size))
 
+        desired_slices = 128
+        volume = volume[:desired_slices, :, :]
         ### scaling normalize
         # 3Dモデルの値を[0,1]の範囲に正規化
         volume = volume - np.min(volume)
@@ -124,7 +127,7 @@ def main():
     args = parser.parse_args()
     # exp_path = './exp{}'.format(args.exp)
     # 実験データを保存するためのパスを設定
-    exp_path = "./exp"
+    exp_path = "./exp2"
 
     # set random seed for GPUs for reproducible
     # 再現性を確保するための乱数のシードを設定
@@ -138,7 +141,8 @@ def main():
     print("Testing Experiement {} ...................".format(args.exp))
     # 実験のインデックスに基づいて、出力チャンネルの数を設定
     if args.exp == 1:
-        args.output_channel = 46
+        args.output_channel = 1
+        args.num_views = 360
     else:
         assert False, print("Not legal experiment index!")
 
@@ -161,7 +165,7 @@ def main():
 
     # データの前処理を定義
     # ここでは、画像をテンソルに変換し、平均と標準偏差で正規化しています
-    normalize = transforms.Normalize(mean=[0.516], std=[0.264])
+    normalize = transforms.Normalize(mean=[0.56148176], std=[0.24216622])
     test_dataset = MedReconDataset(
         transform=transforms.Compose(
             [
@@ -178,7 +182,7 @@ def main():
 
     # load model
     # 事前にトレーニングされたモデルの重みを読み込む
-    ckpt_file = os.path.join(exp_path, "./model/model.pth.tar")
+    ckpt_file = os.path.join(exp_path, "Result/curr_model.pth.tar")
     if os.path.isfile(ckpt_file):
         print("=> loading checkpoint '{}' ".format(ckpt_file))
         checkpoint = torch.load(ckpt_file)
@@ -220,9 +224,13 @@ def test(val_loader, model, criterion, mode):
     model.eval()
     losses = AverageMeter()
     pred = np.zeros(
-        (args.test, args.output_channel, args.output_size, args.output_size),
+        (args.test, 128, args.output_size, args.output_size),
         dtype=np.float32,
     )
+    # pred = np.zeros(
+    #     (args.test, args.output_channel, args.output_size, args.output_size),
+    #    dtype=np.float32,
+    #  )
     for i, (input, target) in enumerate(val_loader):
         input_var, target_var = Variable(input), Variable(target)
         input_var, target_var = input_var.cuda(), target_var.cuda()
@@ -239,6 +247,9 @@ def test(val_loader, model, criterion, mode):
                 mode, i, len(val_loader), loss=losses
             )
         )
+        # 出力する3Dモデルのサイズを表示
+        print("Predicted 3D model shape:", output.shape)
+
     print("Average {} Loss: {y:.5f}\t".format(mode, y=losses.avg))
 
     save_path = os.path.join(exp_path, "result")
@@ -265,15 +276,23 @@ def getPred(data, idx, test_idx=None):
 
 
 def getGroundtruth(idx, normalize=True):
-    model_path = os.path.join(exp_path, "data/3D_CT.bin")
+    model_path = os.path.join(exp_path, "output_volume_D.bin")
     ct3d = np.fromfile(model_path, dtype=np.float32)
     ctslices = np.reshape(ct3d, (-1, args.output_size, args.output_size))
+    # 実際の3Dモデルを予測された3Dモデルの形状に合わせる
+    ctslices = ctslices[:128, :, :]
     if normalize:
         ctslices = dataNormalize(ctslices)
     return ctslices
 
 
 def getErrorMetrics(im_pred, im_gt, mask=None):
+    # 予測された3Dモデルと実際の3Dモデルの形状を表示
+    print("Predicted 3D model shape:", im_pred.shape)
+    print("Actual 3D model shape:", im_gt.shape)
+
+    # 形状が一致していることを確認
+    assert im_pred.flatten().shape == im_gt.flatten().shape
     # im_pred = np.array(im_pred).astype(np.float)
     # im_gt = np.array(im_gt).astype(np.float)
     im_pred = np.array(im_pred).astype(float)
